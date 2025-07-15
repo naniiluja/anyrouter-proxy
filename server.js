@@ -8,8 +8,99 @@ const PORT = process.env.PORT || 3000;
 // Target website
 const TARGET_URL = 'https://anyrouter.top';
 
+// Simple rate limiting
+const requestCounts = new Map();
+const RATE_LIMIT = 10; // requests per minute
+const RATE_WINDOW = 60 * 1000; // 1 minute
+
 // Enable CORS
 app.use(cors());
+
+// Rate limiting middleware
+app.use((req, res, next) => {
+  const clientIP = req.ip || req.connection.remoteAddress;
+  const now = Date.now();
+  
+  if (!requestCounts.has(clientIP)) {
+    requestCounts.set(clientIP, { count: 1, windowStart: now });
+  } else {
+    const client = requestCounts.get(clientIP);
+    
+    if (now - client.windowStart > RATE_WINDOW) {
+      // Reset window
+      client.count = 1;
+      client.windowStart = now;
+    } else {
+      client.count++;
+      
+      if (client.count > RATE_LIMIT) {
+        return res.status(429).json({ 
+          error: 'Too many requests',
+          message: `Rate limit exceeded: ${RATE_LIMIT} requests per minute`
+        });
+      }
+    }
+  }
+  
+  next();
+});
+
+// Simple cache to avoid repeated requests
+const cache = new Map();
+const CACHE_TTL = 5 * 1000; // 5 seconds
+
+// Cache middleware
+app.use((req, res, next) => {
+  const cacheKey = `${req.method}:${req.url}`;
+  const cached = cache.get(cacheKey);
+  
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    console.log(`Cache hit for ${req.url}`);
+    return res.status(cached.statusCode).set(cached.headers).send(cached.data);
+  }
+  
+  // Store original res.end to intercept response
+  const originalEnd = res.end;
+  const originalWrite = res.write;
+  const originalWriteHead = res.writeHead;
+  
+  let responseData = Buffer.alloc(0);
+  let statusCode = 200;
+  let headers = {};
+  
+  res.writeHead = function(code, head) {
+    statusCode = code;
+    headers = head || {};
+    return originalWriteHead.call(this, code, head);
+  };
+  
+  res.write = function(chunk) {
+    if (chunk) {
+      responseData = Buffer.concat([responseData, Buffer.from(chunk)]);
+    }
+    return originalWrite.call(this, chunk);
+  };
+  
+  res.end = function(chunk) {
+    if (chunk) {
+      responseData = Buffer.concat([responseData, Buffer.from(chunk)]);
+    }
+    
+    // Cache successful responses
+    if (statusCode === 200 && responseData.length > 0) {
+      cache.set(cacheKey, {
+        statusCode,
+        headers,
+        data: responseData,
+        timestamp: Date.now()
+      });
+    }
+    
+    return originalEnd.call(this, chunk);
+  };
+  
+  next();
+});
 
 // Log requests
 app.use((req, res, next) => {
@@ -53,6 +144,10 @@ const proxyOptions = {
     console.log(`Proxying: ${req.method} ${TARGET_URL}${req.url}`);
   },
   onProxyRes: (proxyRes, req, res) => {
+    // Remove auto-refresh headers
+    delete proxyRes.headers['refresh'];
+    delete proxyRes.headers['x-refresh'];
+    
     // Handle redirects manually
     if (proxyRes.statusCode >= 300 && proxyRes.statusCode < 400) {
       const location = proxyRes.headers.location;
@@ -73,6 +168,35 @@ const proxyOptions = {
           return;
         }
       }
+    }
+    
+    // Modify HTML content to remove auto-refresh
+    if (proxyRes.headers['content-type'] && proxyRes.headers['content-type'].includes('text/html')) {
+      let data = [];
+      proxyRes.on('data', (chunk) => {
+        data.push(chunk);
+      });
+      
+      proxyRes.on('end', () => {
+        const buffer = Buffer.concat(data);
+        let html = buffer.toString();
+        
+        // Remove meta refresh tags
+        html = html.replace(/<meta[^>]*http-equiv=["']refresh["'][^>]*>/gi, '');
+        
+        // Remove auto-refresh JavaScript patterns
+        html = html.replace(/setTimeout\s*\(\s*[^,]*,\s*\d+\s*\)/gi, '');
+        html = html.replace(/setInterval\s*\(\s*[^,]*,\s*\d+\s*\)/gi, '');
+        html = html.replace(/window\.location\.reload\s*\(\s*\)/gi, '');
+        
+        // Update content length
+        proxyRes.headers['content-length'] = Buffer.byteLength(html);
+        
+        res.writeHead(proxyRes.statusCode, proxyRes.headers);
+        res.end(html);
+      });
+      
+      return; // Don't pipe the original response
     }
     
     // Log responses
