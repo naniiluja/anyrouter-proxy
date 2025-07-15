@@ -25,18 +25,29 @@ const proxyOptions = {
   secure: true,
   timeout: 30000,
   headers: {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.5',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
     'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
     'Upgrade-Insecure-Requests': '1'
   },
   onProxyReq: (proxyReq, req, res) => {
-    // Remove problematic headers
-    proxyReq.removeHeader('host');
-    proxyReq.removeHeader('referer');
-    proxyReq.removeHeader('origin');
+    // Set proper Host header
+    proxyReq.setHeader('Host', 'anyrouter.top');
+    
+    // Set proper Referer to avoid CDN blocking
+    proxyReq.setHeader('Referer', 'https://anyrouter.top/');
+    
+    // Remove problematic headers that might cause issues
+    proxyReq.removeHeader('x-forwarded-for');
+    proxyReq.removeHeader('x-forwarded-proto');
+    proxyReq.removeHeader('x-forwarded-host');
     
     // Log outgoing requests
     console.log(`Proxying: ${req.method} ${TARGET_URL}${req.url}`);
