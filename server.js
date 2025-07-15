@@ -10,7 +10,7 @@ const TARGET_URL = 'https://anyrouter.top';
 
 // Simple rate limiting
 const requestCounts = new Map();
-const RATE_LIMIT = 10; // requests per minute
+const RATE_LIMIT = 100; // requests per minute
 const RATE_WINDOW = 60 * 1000; // 1 minute
 
 // Enable CORS
