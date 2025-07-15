@@ -45,63 +45,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// Simple cache to avoid repeated requests
-const cache = new Map();
-const CACHE_TTL = 5 * 1000; // 5 seconds
-
-// Cache middleware
-app.use((req, res, next) => {
-  const cacheKey = `${req.method}:${req.url}`;
-  const cached = cache.get(cacheKey);
-  
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    console.log(`Cache hit for ${req.url}`);
-    return res.status(cached.statusCode).set(cached.headers).send(cached.data);
-  }
-  
-  // Store original res.end to intercept response
-  const originalEnd = res.end;
-  const originalWrite = res.write;
-  const originalWriteHead = res.writeHead;
-  
-  let responseData = Buffer.alloc(0);
-  let statusCode = 200;
-  let headers = {};
-  
-  res.writeHead = function(code, head) {
-    statusCode = code;
-    headers = head || {};
-    return originalWriteHead.call(this, code, head);
-  };
-  
-  res.write = function(chunk) {
-    if (chunk) {
-      responseData = Buffer.concat([responseData, Buffer.from(chunk)]);
-    }
-    return originalWrite.call(this, chunk);
-  };
-  
-  res.end = function(chunk) {
-    if (chunk) {
-      responseData = Buffer.concat([responseData, Buffer.from(chunk)]);
-    }
-    
-    // Cache successful responses
-    if (statusCode === 200 && responseData.length > 0) {
-      cache.set(cacheKey, {
-        statusCode,
-        headers,
-        data: responseData,
-        timestamp: Date.now()
-      });
-    }
-    
-    return originalEnd.call(this, chunk);
-  };
-  
-  next();
-});
-
 // Log requests
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
@@ -159,44 +102,26 @@ const proxyOptions = {
           const redirectUrl = location.startsWith('/') ? location : new URL(location).pathname + new URL(location).search;
           proxyRes.headers.location = redirectUrl;
         } else {
-          // Block external redirects
+          // Block external redirects by modifying response
           console.log('Blocking external redirect to:', location);
-          res.status(200).json({ 
+          proxyRes.statusCode = 200;
+          proxyRes.headers['content-type'] = 'application/json';
+          delete proxyRes.headers['location'];
+          
+          const blockMessage = JSON.stringify({ 
             message: 'External redirect blocked',
             redirect_url: location 
           });
+          proxyRes.headers['content-length'] = Buffer.byteLength(blockMessage);
+          
+          // Replace response data
+          proxyRes.removeAllListeners('data');
+          proxyRes.removeAllListeners('end');
+          proxyRes.emit('data', Buffer.from(blockMessage));
+          proxyRes.emit('end');
           return;
         }
       }
-    }
-    
-    // Modify HTML content to remove auto-refresh
-    if (proxyRes.headers['content-type'] && proxyRes.headers['content-type'].includes('text/html')) {
-      let data = [];
-      proxyRes.on('data', (chunk) => {
-        data.push(chunk);
-      });
-      
-      proxyRes.on('end', () => {
-        const buffer = Buffer.concat(data);
-        let html = buffer.toString();
-        
-        // Remove meta refresh tags
-        html = html.replace(/<meta[^>]*http-equiv=["']refresh["'][^>]*>/gi, '');
-        
-        // Remove auto-refresh JavaScript patterns
-        html = html.replace(/setTimeout\s*\(\s*[^,]*,\s*\d+\s*\)/gi, '');
-        html = html.replace(/setInterval\s*\(\s*[^,]*,\s*\d+\s*\)/gi, '');
-        html = html.replace(/window\.location\.reload\s*\(\s*\)/gi, '');
-        
-        // Update content length
-        proxyRes.headers['content-length'] = Buffer.byteLength(html);
-        
-        res.writeHead(proxyRes.statusCode, proxyRes.headers);
-        res.end(html);
-      });
-      
-      return; // Don't pipe the original response
     }
     
     // Log responses
