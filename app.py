@@ -5,6 +5,7 @@ from flask_cors import CORS
 import time
 from collections import defaultdict
 import logging
+import re
 
 app = Flask(__name__)
 CORS(app)
@@ -132,8 +133,38 @@ def proxy(path):
         response_headers.pop('X-Refresh', None)
         
         # Create Flask response
+        content = response.content
+        
+        # If HTML content, remove auto-refresh elements
+        if 'text/html' in response.headers.get('content-type', '').lower():
+            try:
+                html = content.decode('utf-8', errors='ignore')
+                
+                # Remove meta refresh tags
+                html = re.sub(r'<meta[^>]*http-equiv=["\']refresh["\'][^>]*>', '', html, flags=re.IGNORECASE)
+                
+                # Remove JavaScript auto-refresh patterns - more aggressive
+                html = re.sub(r'setTimeout\s*\([^)]*\)', 'setTimeout(function(){console.log("blocked")}, 999999)', html, flags=re.IGNORECASE)
+                html = re.sub(r'setInterval\s*\([^)]*\)', 'setInterval(function(){console.log("blocked")}, 999999)', html, flags=re.IGNORECASE)
+                html = re.sub(r'window\.location\.reload\s*\([^)]*\)', '// removed auto-reload', html, flags=re.IGNORECASE)
+                html = re.sub(r'location\.reload\s*\([^)]*\)', '// removed auto-reload', html, flags=re.IGNORECASE)
+                html = re.sub(r'location\.href\s*=\s*location\.href', '// removed auto-reload', html, flags=re.IGNORECASE)
+                html = re.sub(r'window\.location\s*=', '// window.location =', html, flags=re.IGNORECASE)
+                html = re.sub(r'document\.location\s*=', '// document.location =', html, flags=re.IGNORECASE)
+                
+                # Block any script that might refresh the page
+                html = re.sub(r'<script[^>]*>.*?history\.go\(0\).*?</script>', '', html, flags=re.IGNORECASE | re.DOTALL)
+                html = re.sub(r'history\.go\(0\)', '// removed history.go', html, flags=re.IGNORECASE)
+                html = re.sub(r'location\.replace\([^)]*\)', '// removed location.replace', html, flags=re.IGNORECASE)
+                
+                content = html.encode('utf-8')
+                response_headers['Content-Length'] = str(len(content))
+                
+            except Exception as e:
+                logger.warning(f"Failed to process HTML: {e}")
+        
         flask_response = Response(
-            response.content,
+            content,
             status=response.status_code,
             headers=response_headers
         )
